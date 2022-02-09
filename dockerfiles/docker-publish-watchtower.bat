@@ -1,0 +1,1 @@
+cd .. && docker build . --file Dockerfile --tag repository.alpa.fun/watchtower:latest && docker push repository.alpa.fun/watchtower:latest

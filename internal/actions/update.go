@@ -17,7 +17,6 @@ import (
 // any of the images, the associated containers are stopped and restarted with
 // the new image.
 func Update(client container.Client, params types.UpdateParams) (types.Report, error) {
-	log.Debug("Checking containers for updated images")
 	progress := &session.Progress{}
 	staleCount := 0
 
@@ -34,14 +33,16 @@ func Update(client container.Client, params types.UpdateParams) (types.Report, e
 
 	for i, targetContainer := range containers {
 		stale, newestImage, err := client.IsContainerStale(targetContainer)
+		// log.Info("IsRunning ", targetContainer.IsRunning())
+			
 		shouldUpdate := stale && !params.NoRestart && !params.MonitorOnly && !targetContainer.IsMonitorOnly()
-		if err == nil && shouldUpdate {
+		if err == nil && (shouldUpdate || !targetContainer.IsRunning()) {
 			// Check to make sure we have all the necessary information for recreating the container
 			err = targetContainer.VerifyConfiguration()
 			// If the image information is incomplete and trace logging is enabled, log it for further diagnosis
-			if err != nil && log.IsLevelEnabled(log.TraceLevel) {
+			if err != nil {
 				imageInfo := targetContainer.ImageInfo()
-				log.Tracef("Image info: %#v", imageInfo)
+				// log.Info("Image info: %#v", imageInfo)
 				log.Tracef("Container info: %#v", targetContainer.ContainerInfo())
 				if imageInfo != nil {
 					log.Tracef("Image config: %#v", imageInfo.Config)
@@ -57,7 +58,7 @@ func Update(client container.Client, params types.UpdateParams) (types.Report, e
 		} else {
 			progress.AddScanned(targetContainer, newestImage)
 		}
-		containers[i].Stale = stale
+		containers[i].Stale = stale || !targetContainer.IsRunning()
 
 		if stale {
 			staleCount++
@@ -76,10 +77,13 @@ func Update(client container.Client, params types.UpdateParams) (types.Report, e
 		for _, c := range containers {
 			if !c.IsMonitorOnly() {
 				containersToUpdate = append(containersToUpdate, c)
-				progress.MarkForUpdate(c.ID())
+				progress.MarkForUpdate(c.ID())		
+				// log.Info("Container ", c.ID(), " marked for update")
 			}
 		}
 	}
+	
+	// log.Info("params.RollingRestart ", params.RollingRestart)
 
 	if params.RollingRestart {
 		progress.UpdateFailed(performRollingRestart(containersToUpdate, client, params))
@@ -102,6 +106,11 @@ func performRollingRestart(containers []container.Container, client container.Cl
 
 	for i := len(containers) - 1; i >= 0; i-- {
 		if containers[i].ToRestart() {
+			
+			if containers[i].IsDontStop() {
+				return failed
+			}
+			
 			err := stopStaleContainer(containers[i], client, params)
 			if err != nil {
 				failed[containers[i].ID()] = err
@@ -124,12 +133,15 @@ func stopContainersInReversedOrder(containers []container.Container, client cont
 	failed = make(map[types.ContainerID]error, len(containers))
 	stopped = make(map[types.ImageID]bool, len(containers))
 	for i := len(containers) - 1; i >= 0; i-- {
-		if err := stopStaleContainer(containers[i], client, params); err != nil {
-			failed[containers[i].ID()] = err
-		} else {
-			stopped[containers[i].ImageID()] = true
+		if !containers[i].IsDontStop() || !containers[i].IsRunning() {
+			if err := stopStaleContainer(containers[i], client, params); err != nil {
+				// log.Info(containers[i].ID(), " failed stop")
+				failed[containers[i].ID()] = err
+			} else {				
+				// log.Info(containers[i].ID(), " stopped")
+				stopped[containers[i].ImageID()] = true				
+			}
 		}
-
 	}
 	return
 }
@@ -166,8 +178,11 @@ func stopStaleContainer(container container.Container, client container.Client, 
 func restartContainersInSortedOrder(containers []container.Container, client container.Client, params types.UpdateParams, stoppedImages map[types.ImageID]bool) map[types.ContainerID]error {
 	cleanupImageIDs := make(map[types.ImageID]bool, len(containers))
 	failed := make(map[types.ContainerID]error, len(containers))
+	// log.Info("Containers: ", len(containers))
 
 	for _, c := range containers {
+		// log.Info(c.ImageID(), " to restarted: ", c.ToRestart())
+		
 		if !c.ToRestart() {
 			continue
 		}

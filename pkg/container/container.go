@@ -124,6 +124,21 @@ func (c Container) IsMonitorOnly() bool {
 	return parsedBool
 }
 
+// IsDontStop returns the value of the dont-stop label. If the label
+// is not set then false is returned.
+func (c Container) IsDontStop() bool {
+	rawBool, ok := c.getLabelValue(dontStopLabel)
+	if !ok {
+		return false
+	}
+
+	parsedBool, err := strconv.ParseBool(rawBool)
+	if err != nil {
+		return false
+	}
+
+	return parsedBool
+}
 // Scope returns the value of the scope UID label and if the label
 // was set.
 func (c Container) Scope() (string, bool) {
